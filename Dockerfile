@@ -2,7 +2,6 @@ FROM ubuntu:trusty
 
 MAINTAINER Spyros Maniatopoulos spmaniato@gmail.com
 
-# Resin base images already include these two environment variables
 ENV DEBIAN_FRONTEND noninteractive
 ENV TERM xterm
 
@@ -11,37 +10,20 @@ RUN echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selectio
 # ROS distribution and configuration
 ENV ROS_DISTRO indigo
 ENV ROS_CONFIG ros_comm
-ENV ROS_HOME /home/ros
-ENV CATKIN_WS $ROS_HOME/catkin_ws
-ENV ROS_TOOLS "python-rosdep python-rosinstall-generator python-rosinstall python-catkin-tools"
-
-RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu trusty main" > /etc/apt/sources.list.d/ros-latest.list'
-
-RUN apt-key adv --keyserver hkp://ha.pool.sks-keyservers.net --recv-key 0xB01FA116
+ENV CATKIN_WS /usr/catkin_ws
+ENV ROS_INSTALL_DIR /opt/ros/$ROS_DISTRO
 
 RUN apt-get update && apt-get install -yq --no-install-recommends \
   build-essential \
-  $ROS_TOOLS \
-	&& apt-get clean && rm -rf /var/lib/apt/lists/*
+  python-pip
 
-RUN rosdep init
+# Install ROS-related Python tools
+WORKDIR /usr
+COPY ./requirements.txt .
+RUN pip install -r requirements.txt
 
-# Now create the ros user and set its permissions
-RUN adduser --gecos "ROS User" --disabled-password ros
-RUN usermod -a -G dialout ros
-
-ADD 99_aptget /etc/sudoers.d/99_aptget
-RUN chmod 0440 /etc/sudoers.d/99_aptget && chown root:root /etc/sudoers.d/99_aptget
-
-# Switch to this new user
-USER ros
-
-# Update the package list (necessary for upcoming rosdep install to work)
-RUN sudo apt-get update
-
-# HOME needs to be set explicitly. Without it, the HOME environment variable is
-# set to "/"
-RUN HOME=$ROS_HOME rosdep update
+RUN rosdep init \
+    && rosdep update
 
 RUN mkdir -p $CATKIN_WS/src
 
@@ -50,16 +32,23 @@ WORKDIR $CATKIN_WS
 RUN rosinstall_generator $ROS_CONFIG --rosdistro $ROS_DISTRO \
     --deps --tar > .rosinstall \
     && wstool init src .rosinstall \
-    && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
+    && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y \
+       --skip-keys python-rosdep \
+       --skip-keys python-rospkg \
+       --skip-keys python-catkin-pkg
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p $ROS_INSTALL_DIR
 
 RUN catkin init \
-    && catkin config --install --default-install-space \
-    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && catkin config --install --install-space $ROS_INSTALL_DIR \
+       --cmake-args -DCMAKE_BUILD_TYPE=Release \
     && catkin build
 
-COPY ./ros_entrypoint.sh $ROS_HOME
-WORKDIR $ROS_HOME
-RUN sudo chown ros:ros ros_entrypoint.sh
+# TODO: Delete tars in src after installation
+
+COPY ./ros_entrypoint.sh .
 
 ENTRYPOINT ["bash", "ros_entrypoint.sh"]
 
